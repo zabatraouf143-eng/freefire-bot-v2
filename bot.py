@@ -1,7 +1,20 @@
+import os
+import threading
+from flask import Flask
 import telebot
 from telebot import types
 import sqlite3
 import time
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Free Fire Bot is alive and running 24/7!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
 
 TOKEN = "8765104365:AAGEZbHSJ1MMp26tIeyE0Dievbm9-lzgxjM"
 DEV_USERNAME = "raouf100K"
@@ -94,7 +107,9 @@ translations = {
         "ref": "👥 **Parrainage :**\n\nLien :\n`{ref_link}`\n\nGagnez **20 points** quand votre filleul atteint 35 points!\n📊 Parrainés : {refs}",
         "support": "📞 Support : @{DEV_USERNAME}",
         "back": "Retour 🔙"
-    },
+    }
+}
+translations.update({
     "es": {
         "welcome": "🔥 ¡Bienvenido al bot de Free Fire!\n\n🆔 Elige del menú a continuación.\n👥 Usuarios totales: {total_users}",
         "btn_profile": "Perfil 👤",
@@ -155,7 +170,7 @@ translations = {
         "support": "📞 Suporte: @{DEV_USERNAME}",
         "back": "Voltar 🔙"
     }
-}
+})
 
 def get_trans(lang="ar", key=""):
     lang_dict = translations.get(lang, translations["ar"])
@@ -183,6 +198,7 @@ def get_main_menu_markup(lang="ar"):
         types.InlineKeyboardButton(get_trans(lang, 'btn_admin'), callback_data="menu_admin")
     )
     return markup
+
 @bot.message_handler(commands=["start"])
 def send_welcome(message):
     user_id = message.from_user.id
@@ -206,7 +222,6 @@ def send_welcome(message):
     total_users = cursor.fetchone()[0]
     welcome_text = translations[lang]["welcome"].format(total_users=total_users)
     bot.send_message(message.chat.id, welcome_text, reply_markup=get_main_menu_markup(lang))
-
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
     user_id = call.from_user.id
@@ -344,10 +359,6 @@ def callback_query(call):
 
     elif data.startswith("cat_"):
         category = data.split("_", 1)[1]
-        
-        # تحديد مدة الكولداون لكل زر بناءً على طلبك
-        # الأزرار: short, shirink, ex (كل 24 ساعة)
-        # الأزرار: link, Oo (كل 8 ساعات)
         cooldown_time = 28800 if category in ["link", "Oo"] else 86400
         
         cursor.execute("SELECT last_action_time FROM user_category_cooldowns WHERE user_id = ? AND category = ?", (user_id, category))
@@ -362,7 +373,6 @@ def callback_query(call):
                 bot.answer_callback_query(call.id, f"⚠️ لقد قمت بالتخطي من هذه الخانة مسبقاً. عد بعد {remaining_hours} ساعة و {remaining_minutes} دقيقة.", show_alert=True)
                 return
 
-        # البحث عن رابط لم يُستصدم من قبل أبداً (used = 0) لضمان عدم إعطاء نفس الرابط لشخصين
         cursor.execute("SELECT id, url FROM links WHERE category = ? AND used = 0 ORDER BY RANDOM() LIMIT 1", (category,))
         link_row = cursor.fetchone()
 
@@ -370,7 +380,7 @@ def callback_query(call):
             bot.answer_callback_query(call.id, "عذراً، لا توجد روابط متاحة حالياً في هذه الخانة!", show_alert=True)
             return
 
-        link_id, url = link_log = link_row
+        link_id, url = link_row
         msg = bot.send_message(call.message.chat.id, f"🔗 رابط التخطي لـ ({category}):\n{url}\n\nبعد إتمام التخطي، أرسل الكود هنا في رسالة:")
         bot.register_next_step_handler(msg, verify_link_code, category, link_id)
 
@@ -440,7 +450,6 @@ def verify_link_code(message, category, link_id):
     temp_conn = sqlite3.connect("bot_database.db", check_same_thread=False)
     temp_cursor = temp_conn.cursor()
 
-    # التحقق من أن الرابط غير مستخدم من قبل تماماً لتجنب التكرار وتلف الروابط
     temp_cursor.execute("SELECT code, used FROM links WHERE id = ?", (link_id,))
     row = temp_cursor.fetchone()
     if not row or row[1] == 1:
@@ -451,12 +460,6 @@ def verify_link_code(message, category, link_id):
     correct_code, used = row
 
     if entered_code == correct_code:
-        # تحديد النقاط بدقة حسب طلبك لكل زر:
-        # الزر الأول (short): 2 نقطة
-        # الزر الثاني (shirink): 2 نقطة
-        # الزر الثالث (link): 2 نقطة
-        # الرابط الرابع (ex): 1.5 نقطة
-        # الزر الخامس (Oo): 1 نقطة
         points_map = {
             "short": 2.0,
             "shirink": 2.0,
@@ -466,11 +469,9 @@ def verify_link_code(message, category, link_id):
         }
         points = points_map.get(category, 1.0)
         
-        # تعليم الرابط أنه مستخدم نهائياً (used = 1) ولن يرسل لأي مستخدم آخر أبداً
         temp_cursor.execute("UPDATE links SET used = 1 WHERE id = ?", (link_id,))
         temp_cursor.execute("UPDATE users_data SET points_collected = points_collected + ? WHERE user_id = ?", (points, user_id))
         
-        # تسجيل وقت آخر تخطي لهذه الفئة للتحكم في فترة الانتظار (24 ساعة أو 8 ساعات)
         current_time = time.time()
         temp_cursor.execute("""
             INSERT INTO user_category_cooldowns (user_id, category, last_action_time) 
@@ -478,7 +479,6 @@ def verify_link_code(message, category, link_id):
             ON CONFLICT(user_id, category) DO UPDATE SET last_action_time = ?
         """, (user_id, category, current_time, current_time))
         
-        # نظام الإحالة (إضافة 20 نقطة للمُحيل فور وصول المدعو إلى 35 نقطة)
         temp_cursor.execute("SELECT points_collected, referrer, ref_rewarded FROM users_data WHERE user_id = ?", (user_id,))
         u_info = temp_cursor.fetchone()
         if u_info:
@@ -522,5 +522,9 @@ def admin_add_link_process(message):
         bot.send_message(message.chat.id, f"حدث خطأ: {str(e)}")
 
 if __name__ == "__main__":
+    t = threading.Thread(target=run_web)
+    t.start()
+    
+    print("Bot is starting polling...")
     bot.infinity_polling()
 
