@@ -3,7 +3,7 @@ import os
 import telebot
 from telebot import types
 
-TOKEN = "YOUR_BOT_TOKEN_HERE"  # ضع توكن بوتك هنا
+TOKEN = "8765104365:AAGEZbHSJ1MMp26tIeyE0Dievbm9-lzgxjM"
 bot = telebot.TeleBot(TOKEN)
 
 # تخزين مؤقت لبيانات المستخدمين (اللغة، الحالات، إلخ)
