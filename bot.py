@@ -10,7 +10,7 @@ from telegram.ext import (
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = "7911762145:AAH6vJ80YFf0u2M5bUQzQ2k8W9x7Y6z5V4U"
+TOKEN = "8765104365:AAGEZbHSJ1MMp26tIeyE0Dievbm9-lzgxjM"
 user_data_db = {}
 ADMIN_USERNAME = "raouf100K"
 ADMIN_ID = 8890160605
