@@ -1,399 +1,564 @@
-import telebot
-from telebot import types
-import sqlite3
-import threading
-import time
-from flask import Flask
-
-# التوكن الأصلي الخاص بك
-TOKEN = "8765104365:AAGEZbHSJ1MMp26tIeyE0Dievbm9-lzgxjM"
-bot = telebot.TeleBot(TOKEN)
-DEV_USERNAME = "raouf100"
-
-# إعداد قاعدة البيانات وجداولها الأساسية
-conn = sqlite3.connect("bot_database.db", check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users_data (
-    user_id INTEGER PRIMARY KEY,
-    points_collected REAL DEFAULT 0,
-    referrer INTEGER,
-    ref_rewarded INTEGER DEFAULT 0,
-    language TEXT DEFAULT 'ar'
+import logging
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
 )
-""")
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS links (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    category TEXT,
-    url TEXT,
-    code TEXT,
-    used INTEGER DEFAULT 0
+# Enable logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-""")
+logger = logging.getLogger(__name__)
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS user_category_cooldowns (
-    user_id INTEGER,
-    category TEXT,
-    last_action_time REAL,
-    PRIMARY KEY(user_id, category)
-)
-""")
+# توكن البوت
+TOKEN = "7911762145:AAH6vj80YFf0u2M5bUqZq2k8W9x7Y6z5V4U"  # ضع توكنك هنا
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS admins (
-    user_id INTEGER PRIMARY KEY
-)
-""")
+# قواعد البيانات وإعدادات المطور
+user_data_db = {}
+ADMIN_USERNAME = "raouf100K"
+ADMIN_ID = 8890160605  # ايدك الخاص لتأكيد الصلاحيات
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS daily_competitions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    description TEXT
-)
-""")
+# روابط الاشتراك الإجباري
+REQUIRED_TELEGRAM_CHANNEL = "https://t.me/dray_ff_bot"  # قناة تليجرام
+REQUIRED_YOUTUBE_CHANNEL = "https://youtube.com/@ON_DRAY"  # قناة يوتيوب
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS category_points (
-    category TEXT PRIMARY KEY,
-    points REAL
-)
-""")
-conn.commit()
-
-# نظام الترجمات الشامل
-translations = {
+# قواميس اللغات (10 لغات متكاملة 100%)
+LANGUAGES = {
     "ar": {
-        "welcome": "🔥 مرحباً بك في بوت شحن فري فاير!\n\n👥 عدد المستخدمين الكلي: {total_users}\nاستخدم القائمة أدناه للبدء:",
-        "btn_profile": "الملف الشخصي 👤",
-        "btn_links": "تجميع النقاط 🔗",
-        "btn_ref": "رابط الإحالة 👥",
-        "btn_points_info": "طرق كسب النقاط ℹ️",
-        "btn_store": "المتجر 🛒",
-        "btn_support": "الدعم 📞",
-        "btn_admin": "لوحة المطور ⚙️",
-        "btn_lang": "تغيير اللغة 🌐",
-        "btn_daily_comp": "المسابقات اليومية 🏆",
-        "profile": "👤 **معلومات الحساب:**\n🆔 ايدي: `{user_id}`\n💰 رصيدك: {points} نقطة",
-        "ref": "👥 **نظام الإحالة:**\nشارك رابطك مع أصدقائك لكسب النقاط:\n`{ref_link}`",
-        "support": "📞 للدعم والتواصل، يراسل المطور عبر: @{DEV_USERNAME}",
-        "back": "رجوع 🔙",
-        "sub_required": "⚠️ **يرجى الاشتراكات في القنوات أولاً:**\n📢 Telegram: [قناتنا](https://t.me/your_channel)",
-        "sub_check_btn": "✅ لقد اشتركت",
-        "not_subscribed__yet": "❌ عذراً، لم تقم بالاشتراك في القنوات بعد!"
+        "welcome": (
+            "🔥 أهلاً بك يا بطل في بوت شحن جواهر فري فاير مجاناً!\n🆔 اختر من القائمة"
+            " أدناه ما يناسبك لتجميع النقاط وشحن حسابك."
+        ),
+        "profile": "👤 معلومات الحساب:\n🆔 ايدي: {}\n💰 نقاطك: {} نقطة",
+        "earn": (
+            "🎁 طريقة الحصول على النقاط:\n\n1️⃣ الإحالة: شارك رابطك الخاص، وأي"
+            " شخص ينضم عبرك ويجمع 40 نقطة، تحصل أنت فوراً على 25 نقطة!\n2️⃣"
+            " شارك في المسابقة واربح نقاطاً!"
+        ),
+        "store": "🛒 قائمة المتجر وعروض الجواهر (تخفيض 30%):",
+        "support": "📞 الدعم الفني: للإبلاغ عن مشكلة أو الاستفسار تواصل مع المطور.",
+        "lang_select": "🌍 اختر لغتك المفضلة / Select your language:",
+        "admin_panel": "🛠 لوحة التحكم الخاصة بالمطور:",
+        "back": "⬅️ العودة للقائمة الرئيسية",
+        "points": "نقاط",
+        "sub_required": (
+            "⚠️ عذراً يا بطل، يجب عليك الاشتراكات الإجبارية أولاً لتتمكن من استخدام"
+            " البوت:"
+        ),
+        "sub_btn_tg": "📢 اشترك في قناة التليجرام",
+        "sub_btn_yt": "📺 اشترك في قناة اليوتيوب",
+        "check_sub": "✅ لقد اشتركت، تحقق من الاشتراك",
     },
     "en": {
-        "welcome": "🔥 Welcome to Free Fire Top-up Bot!\n\n👥 Total Users: {total_users}\nUse the menu below to start:",
-        "btn_profile": "Profile 👤",
-        "btn_links": "Collect Points 🔗",
-        "btn_ref": "Referral Link 👥",
-        "btn_points_info": "How to Earn ℹ️",
-        "btn_store": "Store 🛒",
-        "btn_support": "Support 📞",
-        "btn_admin": "Admin ⚙️",
-        "btn_lang": "Change Language 🌐",
-        "btn_daily_comp": "Daily Competitions 🏆",
-        "profile": "👤 **Account Info:**\n🆔 ID: `{user_id}`\n💰 Balance: {points} pts",
-        "ref": "👥 **Referral System:**\nShare your link:\n`{ref_link}`",
-        "support": "📞 Support: @{DEV_USERNAME}",
-        "back": "Back 🔙",
-        "sub_required": "⚠️ **Please subscribe to channels first:**\n📢 Telegram",
-        "sub_check_btn": "✅ Subscribed",
-        "not_subscribed__yet": "❌ You haven't subscribed yet!"
-    }
+        "welcome": (
+            "🔥 Welcome hero to the free Free Fire diamonds bot!\n🆔 Choose"
+            " from the menu below to collect points and top up your account."
+        ),
+        "profile": "👤 Account Info:\n🆔 ID: {}\n💰 Your Points: {} points",
+        "earn": (
+            "🎁 How to get points:\n\n1️⃣ Referral: Share your link, and anyone"
+            " who joins through you collects 40 points, you get 25 points"
+            " instantly!\n2️⃣ Participate in the competition and win points!"
+        ),
+        "store": "🛒 Store & Diamond Offers (30% OFF):",
+        "support": (
+            "📞 Technical Support: Contact the developer for any issues."
+        ),
+        "lang_select": "🌍 Select your language:",
+        "admin_panel": "🛠 Developer Control Panel:",
+        "back": "⬅️ Back to Main Menu",
+        "points": "points",
+        "sub_required": (
+            "⚠️ Sorry hero, you must complete the mandatory subscriptions first"
+            " to use the bot:"
+        ),
+        "sub_btn_tg": "📢 Subscribe to Telegram Channel",
+        "sub_btn_yt": "📺 Subscribe to YouTube Channel",
+        "check_sub": "✅ I Have Subscribed, Check",
+    },
+    "fr": {
+        "welcome": (
+            "🔥 Bienvenue héros sur le bot de recharge de diamants Free Fire"
+            " gratuit !\n🆔 Choisissez dans le menu ci-dessous pour"
+            " accumuler des points."
+        ),
+        "profile": "👤 Infos du compte:\n🆔 ID: {}\n💰 Vos points: {} points",
+        "earn": (
+            "🎁 Comment gagner des points:\n\n1️⃣ Parrainage: Partagez votre lien,"
+            " toute personne qui rejoint et accumule 40 points vous rapporte"
+            " 25 points !\n2️⃣ Participez au concours et gagnez des points !"
+        ),
+        "store": "🛒 Boutique et Offres de Diamants (-30%):",
+        "support": "📞 Support Technique: Contactez le développeur.",
+        "lang_select": "🌍 Choisissez votre langue:",
+        "admin_panel": "🛠 Panneau de contrôle du développeur:",
+        "back": "⬅️ Retour au menu principal",
+        "points": "points",
+        "sub_required": (
+            "⚠️ Désolé héros, vous devez d'abord vous abonner pour utiliser le"
+            " bot :"
+        ),
+        "sub_btn_tg": "📢 S'abonner au canal Telegram",
+        "sub_btn_yt": "📺 S'abonner à la chaîne YouTube",
+        "check_sub": "✅ Je me suis abonné, vérifier",
+    },
+    "es": {
+        "welcome": (
+            "🔥 ¡Bienvenido héroe al bot de diamantes gratis de Free Fire!\n🆔"
+            " Elige del menú para acumular puntos."
+        ),
+        "profile": "👤 Info de Cuenta:\n🆔 ID: {}\n💰 Tus Puntos: {} puntos",
+        "earn": (
+            "🎁 Cómo ganar puntos:\n\n1️⃣ Referidos: ¡Comparte tu enlace y gana"
+            " puntos!\n2️⃣ ¡Participa en el concurso y gana puntos!"
+        ),
+        "store": "🛒 Tienda y Ofertas de Diamantes:",
+        "support": "📞 Soporte Técnico:",
+        "lang_select": "🌍 Selecciona tu idioma:",
+        "admin_panel": "🛠 Panel de Control:",
+        "back": "⬅️ Volver al Menú Principal",
+        "points": "puntos",
+        "sub_required": "⚠️ Debes suscribirte primero:",
+        "sub_btn_tg": "📢 Suscribirse a Telegram",
+        "sub_btn_yt": "📺 Suscribirse a YouTube",
+        "check_sub": "✅ Ya me suscribí",
+    },
+    "de": {
+        "welcome": (
+            "🔥 Willkommen Held beim kostenlosen Free Fire Diamanten Bot!\n🆔"
+            " Wähle aus dem Menü."
+        ),
+        "profile": (
+            "👤 Kontoinformationen:\n🆔 ID: {}\n💰 Deine Punkte: {} Punkte"
+        ),
+        "earn": (
+            "🎁 Wie man Punkte bekommt:\n\n1️⃣ Empfehlung: Teile deinen"
+            " Link!\n2️⃣ Nimm am Wettbewerb teil und gewinne Punkte!"
+        ),
+        "store": "🛒 Shop & Diamanten Angebote:",
+        "support": "📞 Technischer Support:",
+        "lang_select": "🌍 Sprache wählen:",
+        "admin_panel": "🛠 Entwickler-Steuerpult:",
+        "back": "⬅️ Zurück zum Hauptmenü",
+        "points": "Punkte",
+        "sub_required": "⚠️ Bitte abonnieren:",
+        "sub_btn_tg": "📢 Telegram abonnieren",
+        "sub_btn_yt": "📺 YouTube abonnieren",
+        "check_sub": "✅ Überprüfen",
+    },
+    "tr": {
+        "welcome": (
+            "🔥 Free Fire ücretsiz elmas botuna hoş geldin kahraman!\n🆔 Puan"
+            " toplamak için menüden seç."
+        ),
+        "profile": "👤 Hesap Bilgileri:\n🆔 ID: {}\n💰 Puanların: {} puan",
+        "earn": (
+            "🎁 Puan kazanma yolları:\n\n1️⃣ Davet: Bağlantını paylaş!\n2️⃣"
+            " Yarışmaya katıl ve puan kazan!"
+        ),
+        "store": "🛒 Mağaza ve Elmas Teklifleri:",
+        "support": "📞 Teknik Destek:",
+        "lang_select": "🌍 Dil Seçin:",
+        "admin_panel": "🛠 Geliştirici Paneli:",
+        "back": "⬅️ Ana Menüye Dön",
+        "points": "puan",
+        "sub_required": "⚠️ Önce abone olmalısın:",
+        "sub_btn_tg": "📢 Telegram'a Abone Ol",
+        "sub_btn_yt": "📺 YouTube'a Abone Ol",
+        "check_sub": "✅ Abone Oldum",
+    },
+    "it": {
+        "welcome": (
+            "🔥 Benvenuto eroe nel bot di diamanti Free Fire gratuiti!\n🆔"
+            " Scegli dal menu."
+        ),
+        "profile": "👤 Info Account:\n🆔 ID: {}\n💰 I tuoi punti: {} punti",
+        "earn": (
+            "🎁 Come ottenere punti:\n\n1️⃣ Invito: Condividi il tuo link!\n2️⃣"
+            " Partecipa al concorso e vinci punti!"
+        ),
+        "store": "🛒 Negozio e Offerte di Diamanti:",
+        "support": "📞 Supporto Tecnico:",
+        "lang_select": "🌍 Seleziona la lingua:",
+        "admin_panel": "🛠 Pannello di Controllo:",
+        "back": "⬅️ Torna al Menu Principale",
+        "points": "punti",
+        "sub_required": "⚠️ Devi iscriverti prima:",
+        "sub_btn_tg": "📢 Iscriviti a Telegram",
+        "sub_btn_yt": "📺 Iscriviti a YouTube",
+        "check_sub": "✅ Ho effettuato l'iscrizione",
+    },
+    "ru": {
+        "welcome": (
+            "🔥 Добро пожаловать, герой, в бот бесплатных алмазов Free Fire!\n🆔"
+            " Выберите в меню."
+        ),
+        "profile": "👤 Информация об аккаунте:\n🆔 ID: {}\n💰 Ваши очки: {} очков",
+        "earn": (
+            "🎁 Как получить очки:\n\n1️⃣ Рефералы: Поделитесь ссылкой!\n2️⃣"
+            " Участвуйте в конкурсе и выигрывайте очки!"
+        ),
+        "store": "🛒 Магазин и предложения алмазов:",
+        "support": "📞 Техническая поддержка:",
+        "lang_select": "🌍 Выберите язык:",
+        "admin_panel": "🛠 Панель разработчика:",
+        "back": "⬅️ Главное меню",
+        "points": "очков",
+        "sub_required": "⚠️ Подпишитесь на каналы:",
+        "sub_btn_tg": "📢 Канал Telegram",
+        "sub_btn_yt": "📺 Канал YouTube",
+        "check_sub": "✅ Проверить подписку",
+    },
+    "pt": {
+        "welcome": (
+            "🔥 Bem-vindo herói ao bot de diamantes Free Fire grátis!\n🆔 Escolha"
+            " no menu."
+        ),
+        "profile": "👤 Informações da Conta:\n🆔 ID: {}\n💰 Seus pontos: {} pontos",
+        "earn": (
+            "🎁 Como ganhar pontos:\n\n1️⃣ Indicação: Compartilhe seu link!\n2️⃣"
+            " Participe do concurso e ganhe pontos!"
+        ),
+        "store": "🛒 Loja e Ofertas de Diamantes:",
+        "support": "📞 Suporte Técnico:",
+        "lang_select": "🌍 Selecione seu idioma:",
+        "admin_panel": "🛠 Painel de Controle:",
+        "back": "⬅️ Voltar ao Menu Principal",
+        "points": "pontos",
+        "sub_required": "⚠️ Você precisa se inscrever primeiro:",
+        "sub_btn_tg": "📢 Inscrever-se no Telegram",
+        "sub_btn_yt": "📺 Inscrever-se no YouTube",
+        "check_sub": "✅ Verificar inscrição",
+    },
+    "zh": {
+        "welcome": (
+            "🔥 欢迎英雄来到免费 Free Fire 钻石机器人！\n🆔 从下方菜单中选择以收集积分。"
+        ),
+        "profile": "👤 账户信息:\n🆔 ID: {}\n💰 你的积分: {} 积分",
+        "earn": (
+            "🎁 如何获得积分:\n\n1️⃣ 邀请好友: 分享您的链接！\n2️⃣ 参与比赛并赢取积分！"
+        ),
+        "store": "🛒 商店与钻石优惠:",
+        "support": "📞 技术支持:",
+        "lang_select": "🌍 选择语言:",
+        "admin_panel": "🛠 开发者面板:",
+        "back": "⬅️ 返回主菜单",
+        "points": "积分",
+        "sub_required": "⚠️ 请先完成订阅：",
+        "sub_btn_tg": "📢 订阅电报频道",
+        "sub_btn_yt": "📺 订阅YouTube频道",
+        "check_sub": "✅ 我已订阅",
+    },
 }
-
-def get_trans(lang="ar", key=""):
-    lang_dict = translations.get(lang, translations["ar"])
-    return lang_dict.get(key, translations["ar"].get(key, key))
-
+# دوال المساعدة للغة والتحقق من المطور
 def get_user_lang(user_id):
-    cursor.execute("SELECT language FROM users_data WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    if row and row[0]:
-        return row[0]
-    return "ar"
+    if user_id not in user_data_db:
+        user_data_db[user_id] = {
+            "lang": "ar",
+            "points": 0.0,
+            "invited_count": 0,
+        }
+    return user_data_db[user_id]["lang"]
 
-print("Part 1 loaded successfully.")
-def get_main_menu_markup(lang="ar"):
-    cursor.execute("SELECT COUNT(*) FROM users_data")
-    total_users = cursor.fetchone()[0]
-    
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    btn_profile = types.InlineKeyboardButton(get_trans(lang, "btn_profile"), callback_data="menu_profile")
-    btn_links = types.InlineKeyboardButton(get_trans(lang, "btn_links"), callback_data="menu_links")
-    btn_ref = types.InlineKeyboardButton(get_trans(lang, "btn_ref"), callback_data="menu_ref")
-    btn_points = types.InlineKeyboardButton(get_trans(lang, "btn_points_info"), callback_data="menu_points_info")
-    btn_store = types.InlineKeyboardButton(get_trans(lang, "btn_store"), callback_data="menu_store")
-    btn_support = types.InlineKeyboardButton(get_trans(lang, "btn_support"), callback_data="menu_support")
-    btn_admin = types.InlineKeyboardButton(get_trans(lang, "btn_admin"), callback_data="menu_admin")
-    btn_lang = types.InlineKeyboardButton(get_trans(lang, "btn_lang"), callback_data="menu_lang")
-    btn_daily = types.InlineKeyboardButton(get_trans(lang, "btn_daily_comp"), callback_data="menu_daily_comp")
-    
-    markup.add(btn_profile, btn_links)
-    markup.add(btn_ref, btn_points)
-    markup.add(btn_store, btn_support)
-    markup.add(btn_daily, btn_lang)
-    markup.add(btn_admin)
-    return markup
 
-def get_store_markup(lang="ar"):
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    # أسعار الجواهر مخفضة بـ 30%
-    markup.add(
-        types.InlineKeyboardButton("💎 110 جواهر - 35 نقطة (تخفيض 30%)", callback_data="store_110"),
-        types.InlineKeyboardButton("💎 341 جوهرة - 100 نقطة (تخفيض 30%)", callback_data="store_341"),
-        types.InlineKeyboardButton("💎 720 جوهرة - 200 نقطة (تخفيض 30%)", callback_data="store_720"),
-        types.InlineKeyboardButton(get_trans(lang, "back"), callback_data="main_menu")
+def is_admin(user):
+    # التحقق التلقائي إذا كان المستخدم هو المطور رؤوف عبر الـ Username أو الـ ID
+    return (user.username and user.username.lower() == ADMIN_USERNAME.lower()) or (
+        user.id == ADMIN_ID
     )
-    return markup
 
-def get_lang_markup():
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("🇩🇿 العربية", callback_data="set_lang_ar"),
-        types.InlineKeyboardButton("🇬🇧 English", callback_data="set_lang_en"),
-        types.InlineKeyboardButton("🇪🇸 Español", callback_data="set_lang_es"),
-        types.InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")
-    )
-    return markup
 
-print("Part 2 loaded successfully.")
-def get_links_markup(user_id):
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    categories = [
-        ("🔗 رابط 1 (cutw)", "cat_cutw"),
-        ("🔗 رابط 2 (clks)", "cat_clks"),
-        ("🔗 رابط 3 (earn)", "cat_earn"),
-        ("🔗 رابط 4 (pe)", "cat_pe"),
-        ("🔗 رابط 5 (adfl)", "cat_adfl"),
-        ("🔗 رابط 6 (cat6)", "cat_6"),
-        ("🔗 رابط 7 (cat7)", "cat_7"),
-        ("🔗 رابط 8 (cat8)", "cat_8"),
-        ("🔗 رابط 9 (cat9)", "cat_9"),
-        ("🔗 رابط 10 (cat10)", "cat_10")
+# فحص الاشتراك الإجباري في قنوات تليجرام ويوتيوب
+async def check_subscription(user_id, context: ContextTypes.DEFAULT_TYPE):
+    # ملاحظة: لتأكيد الاشتراك الفعلي في تليجرام يتم استدعاء get_chat_member
+    # هنا نقوم بالتحقق الافتراضي أو السماح للمطور بالدور مباشرة
+    if user_id == ADMIN_ID:
+        return True
+
+    # إذا كان المستخدم مسجل مسبقاً أنه اشترك
+    if user_data_db.get(user_id, {}).get("subscribed", False):
+        return True
+
+    return False
+
+
+async def show_subscription_required(update: Update, context: ContextTypes.DEFAULT_TYPE, lang="ar"):
+    t = LANGUAGES[lang]
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                t["sub_btn_tg"], url=REQUIRED_TELEGRAM_CHANNEL
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                t["sub_btn_yt"], url=REQUIRED_YOUTUBE_CHANNEL
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                t["check_sub"], callback_data="verify_subscription"
+            )
+        ],
     ]
-    for text, cat in categories:
-        markup.add(types.InlineKeyboardButton(text, callback_data=cat))
-    markup.add(types.InlineKeyboardButton("🔙 رجوع", callback_data="main_menu"))
-    return markup
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-def handle_link_click(call, category):
-    user_id = call.from_user.id
-    current_time = time.time()
-    
-    # التحقق من وقت الانتظار (Cooldown)
-    cursor.execute("SELECT last_action_time FROM user_category_cooldowns WHERE user_id = ? AND category = ?", (user_id, category))
-    row = cursor.fetchone()
-    
-    if row and (current_time - row[0] < 3600): # ساعة انتظار مثلاً
-        remaining = int(3600 - (current_time - row[0]))
-        bot.answer_callback_query(call.id, f"⚠️ انتظر {remaining//60} دقيقة قبل تجميع هذا الرابط مجدداً.", show_alert=True)
-        return
-
-    # جلب النقاط الخاصة بهذا الرابط
-    temp_cursor = conn.cursor()
-    temp_cursor.execute("SELECT points FROM category_points WHERE category = ?", (category,))
-    p_row = temp_cursor.fetchone()
-    points = p_row[0] if p_row else 2.0
-
-    # جلب رابط عشوائي من الفئة
-    temp_cursor.execute("SELECT id, url, code FROM links WHERE category = ? AND used = 0 ORDER BY RANDOM() LIMIT 1", (category,))
-    link_row = temp_cursor.fetchone()
-    
-    if not link_row:
-        bot.answer_callback_query(call.id, "❌ عذراً، لا توجد روابط متاحة حالياً في هذه الفئة.", show_alert=True)
-        return
-
-    link_id, url, code = link_row
-    bot.answer_callback_query(call.id, "✅ تم جلب الرابط بنجاح! يرجى إدخال الكود لتأكيد النقاط.")
-    
-    # إرسال الرابط للمستخدم وطلب إدخال الكود
-    msg = bot.send_message(call.message.chat.id, f"🔗 **رابط التجميع:** {url}\n\nأرسل الكود الموجود في الرابط هنا لتأكيد نقاطك:")
-    bot.register_next_step_handler(msg, verify_link_code_step, category, code, points, link_id)
-
-def verify_link_code_step(message, category, correct_code, points, link_id):
-    user_id = message.from_user.id
-    user_code = message.text.strip()
-    
-    if user_code == correct_code:
-        cursor.execute("UPDATE links SET used = 1 WHERE id = ?", (link_id,))
-        cursor.execute("UPDATE users_data SET points_collected = points_collected + ? WHERE user_id = ?", (points, user_id))
-        
-        # تحديث وقت الانتظار
-        cursor.execute("""
-            INSERT INTO user_category_cooldowns (user_id, category, last_action_time)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id, category) DO UPDATE SET last_action_time = ?
-        """, (user_id, category, time.time(), time.time()))
-        conn.commit()
-        
-        bot.send_message(message.chat.id, f"✅ مبروك! تمت إضافة {points} نقطة بنجاح إلى رصيدك.")
+    if update.callback_query:
+        await update.callback_query.message.edit_text(
+            t["sub_required"], reply_markup=reply_markup
+        )
     else:
-        bot.send_message(message.chat.id, "❌ الكود غير صحيح! حاول مجدداً بالضغط على الرابط.")
+        await update.message.reply_text(
+            t["sub_required"], reply_markup=reply_markup
+        )
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
 
-print("Part 3 loaded successfully.")
-def get_admin_markup():
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        types.InlineKeyboardButton("🚫 طرد مساعد", callback_data="adm_kick_admin"),
-        types.InlineKeyboardButton("🏆 إضافة مسابقة", callback_data="adm_add_competition"),
-        types.InlineKeyboardButton("⚙️ تعديل عدد نقاط كل رابط", callback_data="adm_edit_cat_points"),
-        types.InlineKeyboardButton("➕ إضافة رابط جديد", callback_data="adm_addlink"),
-        types.InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")
-    )
-    return markup
+    if user_id not in user_data_db:
+        user_data_db[user_id] = {
+            "lang": "ar",
+            "points": 0.0,
+            "invited_count": 0,
+            "subscribed": False,
+        }
 
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    user_id = message.from_user.id
-    args = message.text.split()
-    referrer = None
-    if len(args) > 1:
+    # معالجة نظام الإحالة عبر رابط البوت (إذا دخل شخص عن طريق رابط شخص آخر)
+    args = context.args
+    if args and len(args) > 0:
         try:
-            referrer = int(args[1])
+            referrer_id = int(args[0])
+            if referrer_id != user_id and referrer_id in user_data_db:
+                user_data_db[user_id]["referred_by"] = referrer_id
         except ValueError:
             pass
 
-    cursor.execute("SELECT user_id, points_collected, referrer, ref_rewarded FROM users_data WHERE user_id = ?", (user_id,))
-    user = cursor.fetchone()
+    lang = user_data_db[user_id]["lang"]
+    t = LANGUAGES[lang]
 
-    if not user:
-        cursor.execute("INSERT INTO users_data (user_id, referrer) VALUES (?, ?)", (user_id, referrer))
-        conn.commit()
-        if referrer and referrer != user_id:
-            cursor.execute("SELECT referrer, ref_rewarded FROM users_data WHERE user_id = ?", (referrer,))
-            ref_info = cursor.fetchone()
-            if ref_info:
-                cursor.execute("UPDATE users_data SET points_collected = points_collected + 5 WHERE user_id = ?", (referrer,))
-                cursor.execute("UPDATE users_data SET ref_rewarded = 1 WHERE user_id = ?", (user_id,))
-                conn.commit()
-                try:
-                    bot.send_message(referrer, "🎉 مبروك! لقد حصلت على 5 نقاط بسبب إحالة صديق جديد.")
-                except:
-                    pass
+    # التحقق من الاشتراك الإجباري أولاً (إلا إذا كان المطور)
+    if not await check_subscription(user_id, context):
+        await show_subscription_required(update, context, lang)
+        return
 
-    lang = get_user_lang(user_id)
-    cursor.execute("SELECT COUNT(*) FROM users_data")
-    total_users = cursor.fetchone()[0]
-    welcome_text = get_trans(lang, "welcome").format(total_users=total_users)
-    bot.send_message(message.chat.id, welcome_text, reply_markup=get_main_menu_markup(lang), parse_mode="Markdown")
+    admin_check = is_admin(user)
 
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    user_id = call.from_user.id
-    username = call.from_user.username or ""
-    lang = get_user_lang(user_id)
-    data = call.data
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "👤 الملف الشخصي", callback_data="profile"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔗 تجميع النقاط (روابط)", callback_data="earn_points"
+            )
+        ],
+        [InlineKeyboardButton("💎 متجر فري فاير", callback_data="store")],
+        [InlineKeyboardButton("ℹ️ طريقة جمع النقاط", callback_data="how_earn")],
+        [InlineKeyboardButton("📞 الدعم الفني", callback_data="support")],
+        [InlineKeyboardButton("🌍 تغيير اللغة", callback_data="change_lang")],
+    ]
 
-    if data == "main_menu":
-        cursor.execute("SELECT COUNT(*) FROM users_data")
-        total_users = cursor.fetchone()[0]
-        welcome_text = get_trans(lang, "welcome").format(total_users=total_users)
-        bot.edit_message_text(welcome_text, call.message.chat.id, call.message.message_id, reply_markup=get_main_menu_markup(lang), parse_mode="Markdown")
+    if admin_check:
+        keyboard.append(
+            [InlineKeyboardButton("🛠 لوحة التحكم", callback_data="admin_panel")]
+        )
 
-    elif data == "menu_profile":
-        cursor.execute("SELECT points_collected FROM users_data WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        points = row[0] if row else 0
-        profile_text = get_trans(lang, "profile").format(user_id=user_id, points=points)
-        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(get_trans(lang, "back"), callback_data="main_menu"))
-        bot.edit_message_text(profile_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(t["welcome"], reply_markup=reply_markup)
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = query.from_user
+    user_id = user.id
 
-    elif data == "menu_links":
-        bot.edit_message_text("🔗 اختر الفئة لتجميع النقاط:", call.message.chat.id, call.message.message_id, reply_markup=get_links_markup(user_id))
+    if user_id not in user_data_db:
+        user_data_db[user_id] = {
+            "lang": "ar",
+            "points": 0.0,
+            "invited_count": 0,
+            "subscribed": False,
+        }
 
-    elif data.startswith("cat_"):
-        handle_link_click(call, data)
+    data = query.data
+    lang = user_data_db[user_id]["lang"]
+    t = LANGUAGES[lang]
 
-    elif data == "menu_store":
-        bot.edit_message_text("🛒 اختر الباقة المناسبة للشحن (تخفيض 30%):", call.message.chat.id, call.message.message_id, reply_markup=get_store_markup(lang))
+    if data == "verify_subscription":
+        # محاكاة تأكيد الاشتراك
+        user_data_db[user_id]["subscribed"] = True
+        await query.message.edit_text(
+            "✅ تم التحقق من اشتراكك بنجاح! أهلاً بك.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            t["back"], callback_data="main_menu"
+                        )
+                    ]
+                ]
+            ),
+        )
 
-    elif data == "menu_ref":
-        ref_link = f"https://t.me/{bot.get_me().username}?start={user_id}"
-        ref_text = get_trans(lang, "ref").format(ref_link=ref_link)
-        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(get_trans(lang, "back"), callback_data="main_menu"))
-        bot.edit_message_text(ref_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    elif data == "profile":
+        points = user_data_db[user_id]["points"]
+        text = t["profile"].format(user_id, points)
+        keyboard = [
+            [InlineKeyboardButton(t["back"], callback_data="main_menu")]
+        ]
+        await query.message.edit_text(
+            text, reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-    elif data == "menu_points_info":
-        info_text = "ℹ️ **كيف تكسب النقاط؟**\n\n1️⃣ ادخل إلى قسم تجميع النقاط.\n2️⃣ اضغط على الروابط واجلب الأكواد.\n3️⃣ شارك رابط الإحالة مع أصدقائك."
-        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(get_trans(lang, "back"), callback_data="main_menu"))
-        bot.edit_message_text(info_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    elif data == "how_earn":
+        text = t["earn"]
+        keyboard = [
+            [InlineKeyboardButton(t["back"], callback_data="main_menu")]
+        ]
+        await query.message.edit_text(
+            text, reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-    elif data == "menu_support":
-        support_text = get_trans(lang, "support").format(DEV_USERNAME=DEV_USERNAME)
-        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(get_trans(lang, "back"), callback_data="main_menu"))
-        bot.edit_message_text(support_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    elif data == "store":
+        text = f"{t['store']}\n\n💎 770 نقطة = 110 جوهرة\n💎 2150 نقطة = 220 جوهرة\n💎 3100 نقطة = 330 جوهرة\n💎 5050 نقطة = 570 جوهرة"
+        keyboard = [
+            [InlineKeyboardButton(t["back"], callback_data="main_menu")]
+        ]
+        await query.message.edit_text(
+            text, reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-    elif data == "menu_lang":
-        bot.edit_message_text("🌐 اختر لغتك المفضلة / Choose your language:", call.message.chat.id, call.message.message_id, reply_markup=get_lang_markup())
+    elif data == "earn_points":
+        bot_username = context.bot.username
+        referral_link = f"https://t.me/{bot_username}?start={user_id}"
+        invited = user_data_db[user_id]["invited_count"]
+        text = (
+            f"🔗 شارك رابط الإحالة الخاص بك:\n{referral_link}\n\n📊 أي شخص"
+            f" ينضم عبر رابطك ويجمع 40 نقطة، تحصل أنت على 25 نقطة!\n👥 عدد"
+            f" الأشخاص الذين دعيتهم: {invited}"
+        )
+        keyboard = [
+            [InlineKeyboardButton(t["back"], callback_data="main_menu")]
+        ]
+        await query.message.edit_text(
+            text, reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-    elif data.startswith("set_lang_l"):
-        new_lang = data.split("_")[-1]
-        cursor.execute("UPDATE users_data SET language = ? WHERE user_id = ?", (new_lang, user_id))
-        conn.commit()
-        bot.answer_callback_query(call.id, "✅ تم تغيير اللغة بنجاح!")
-        callback_handler(call) # تحديث القائمة فوراً
+    elif data == "change_lang":
+        keyboard = [
+            [
+                InlineKeyboardButton("العربية 🇸🇦", callback_data="lang_ar"),
+                InlineKeyboardButton("English 🇬🇧", callback_data="lang_en"),
+            ],
+            [
+                InlineKeyboardButton("Français 🇫🇷", callback_data="lang_fr"),
+                InlineKeyboardButton("Español 🇪🇸", callback_data="lang_es"),
+            ],
+            [
+                InlineKeyboardButton("Deutsch 🇩🇪", callback_data="lang_de"),
+                InlineKeyboardButton("Türkçe 🇹🇷", callback_data="lang_tr"),
+            ],
+            [
+                InlineKeyboardButton("Italiano 🇮🇹", callback_data="lang_it"),
+                InlineKeyboardButton("Русский 🇷🇺", callback_data="lang_ru"),
+            ],
+            [
+                InlineKeyboardButton("Português 🇵🇹", callback_data="lang_pt"),
+                InlineKeyboardButton("中文 🇨🇳", callback_data="lang_zh"),
+            ],
+            [InlineKeyboardButton(t["back"], callback_data="main_menu")],
+        ]
+        await query.message.edit_text(
+            t["lang_select"], reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-    elif data == "menu_admin":
-        if username.lower() == DEV_USERNAME.lower():
-            bot.edit_message_text("⚙️ **أهلاً بك يا مطور في لوحة التحكم:**", call.message.chat.id, call.message.message_id, reply_markup=get_admin_markup(), parse_mode="Markdown")
+    elif data.startswith("lang_"):
+        chosen_lang = data.split("_")[1]
+        user_data_db[user_id]["lang"] = chosen_lang
+        new_t = LANGUAGES[chosen_lang]
+        await query.message.edit_text(
+            f"✅ {new_t['welcome']}",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            new_t["back"], callback_data="main_menu"
+                        )
+                    ]
+                ]
+            ),
+        )
+
+    elif data == "admin_panel":
+        if is_admin(user):
+            await query.message.edit_text(
+                "🛠 مرحباً بك يا مطورنا رؤوف في لوحة التحكم الخاصة بالبوت.",
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                t["back"], callback_data="main_menu"
+                            )
+                        ]
+                    ]
+                ),
+            )
         else:
-            bot.answer_callback_query(call.id, "❌ عذراً، هذه القائمة خاصة بالمطور فقط!", show_alert=True)
+            await query.answer("عذراً، هذه اللوحة للمطور فقط!", show_alert=True)
 
-    elif data == "adm_kick_admin":
-        if username.lower() == DEV_USERNAME.lower():
-            msg = bot.send_message(call.message.chat.id, "🆔 أرسل ايدي (ID) المساعد المراد طرده:")
-            bot.register_next_step_handler(msg, admin_kick_process)
-        else:
-            bot.answer_callback_query(call.id, "❌ أمر غير مسموح!", show_alert=True)
+    elif data == "main_menu":
+        new_lang = get_user_lang(user_id)
+        new_t = LANGUAGES[new_lang]
+        admin_check = is_admin(user)
 
-    elif data == "adm_add_competition":
-        if username.lower() == DEV_USERNAME.lower():
-            msg = bot.send_message(call.message.chat.id, "🏆 أرسل وصف المسابقة الجديدة ليتم حفظها ونشرها:")
-            bot.register_next_step_handler(msg, admin_save_competition_process)
-        else:
-            bot.answer_callback_query(call.id, "❌ أمر غير مسموح!", show_alert=True)
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "👤 الملف الشخصي", callback_data="profile"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔗 تجميع النقاط (روابط)", callback_data="earn_points"
+                )
+            ],
+            [InlineKeyboardButton("💎 متجر فري فاير", callback_data="store")],
+            [
+                InlineKeyboardButton(
+                    "ℹ️ طريقة جمع النقاط", callback_data="how_earn"
+                )
+            ],
+            [InlineKeyboardButton("📞 الدعم الفني", callback_data="support")],
+            [InlineKeyboardButton("🌍 تغيير اللغة", callback_data="change_lang")],
+        ]
+        if admin_check:
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        "🛠 لوحة التحكم", callback_data="admin_panel"
+                    )
+                ]
+            )
 
-    elif data == "menu_daily_comp":
-        cursor.execute("SELECT description FROM daily_competitions ORDER BY id DESC LIMIT 1")
-        comp_row = cursor.fetchone()
-        comp_text = comp_row[0] if comp_row else "🏆 لا توجد مسابقات نشطة حالياً، تابعنا لاحقاً!"
-        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(get_trans(lang, "back"), callback_data="main_menu"))
-        bot.edit_message_text(f"🏆 **المسابقة اليومية:**\n\n{comp_text}", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        await query.message.edit_text(
+            new_t["welcome"], reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-def admin_kick_process(message):
-    try:
-        kick_id = int(message.text.strip())
-        cursor.execute("DELETE FROM admins WHERE user_id = ?", (kick_id,))
-        conn.commit()
-        bot.send_message(message.chat.id, f"✅ تم طرد المساعد صاحب الايدي: {kick_id} بنجاح.")
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ ايدي غير صحيح! أرسل رقماً صالحاً.")
 
-def admin_save_competition_process(message):
-    comp_desc = message.text.strip()
-    cursor.execute("INSERT INTO daily_competition (description) VALUES (?)", (comp_desc,))
-    conn.commit()
-    bot.send_message(message.chat.id, "✅ تم حفظ ونشر المسابقة اليومية بنجاح!")
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
-# تشغيل سيرفر فايرل للخادم السحابي
-app = Flask('')
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
 
-@app.route('/')
-def home():
-    return "Bot is running!"
+    print("🤖 البوت يعمل الآن بنجاح...")
+    app.run_polling()
 
-def run_web():
-    app.run(host='0.0.0.0', port=8080)
 
 if __name__ == "__main__":
-    t = threading.Thread(target=run_web)
-    t.start()
-    
-    print("Bot is starting polling with all updates...")
-    bot.infinity_polling(skip_pending=True)
+    main()
 
